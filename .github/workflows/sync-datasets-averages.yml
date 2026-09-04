@@ -4,7 +4,6 @@ on:
   schedule:
     - cron: "17 3 * * *"
 
-  # Allows manual runs from the GitHub Actions page
   workflow_dispatch:
 
 permissions:
@@ -36,12 +35,11 @@ jobs:
             "https://strengthpeaking.com/openipf-raw-strength-averages.csv" \
             -o datasets/openipf-raw-strength-averages.csv
 
+          test -s datasets/openipf-raw-strength-averages.csv
+
           echo
           echo "CSV downloaded:"
           ls -lh datasets/openipf-raw-strength-averages.csv
-
-          # Make sure the file isn't empty
-          test -s datasets/openipf-raw-strength-averages.csv
 
       - name: Generate JSON from CSV
         run: |
@@ -87,27 +85,24 @@ jobs:
 
       - name: Validate datasets
         run: |
-          echo "Checking CSV..."
+          echo "Validating CSV..."
           test -s datasets/openipf-raw-strength-averages.csv
-
-          echo "First 3 CSV lines:"
           head -n 3 datasets/openipf-raw-strength-averages.csv
 
           echo
-          echo "Checking JSON..."
+          echo "Validating JSON..."
           test -s datasets/openipf-raw-strength-averages.json
 
           python -m json.tool \
             datasets/openipf-raw-strength-averages.json \
             > /dev/null
 
-          echo "JSON is valid."
-
           echo
-          echo "Dataset files:"
+          echo "Both datasets are valid."
+
           ls -lh datasets/
 
-      - name: Commit changes if datasets changed
+      - name: Commit datasets to GitHub if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -117,11 +112,65 @@ jobs:
             datasets/openipf-raw-strength-averages.json
 
           if git diff --cached --quiet; then
-            echo "Datasets have not changed."
-            exit 0
+            echo "GitHub datasets have not changed."
+          else
+            git commit \
+              -m "Update StrengthPeaking datasets $(date -u +'%Y-%m-%d')"
+
+            git push
           fi
 
-          git commit \
-            -m "Update StrengthPeaking datasets $(date -u +'%Y-%m-%d')"
+      - name: Install Hugging Face client
+        run: |
+          python -m pip install --upgrade huggingface_hub
 
-          git push
+      - name: Publish datasets to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+
+          from huggingface_hub import (
+              HfApi,
+              CommitOperationAdd,
+          )
+
+          repo_id = (
+              "strengthpeaking/"
+              "raw-powerlifting-strength-averages"
+          )
+
+          token = os.environ["HF_TOKEN"]
+
+          api = HfApi(token=token)
+
+          operations = [
+              CommitOperationAdd(
+                  path_in_repo="openipf-raw-strength-averages.csv",
+                  path_or_fileobj=(
+                      "datasets/"
+                      "openipf-raw-strength-averages.csv"
+                  ),
+              ),
+              CommitOperationAdd(
+                  path_in_repo="openipf-raw-strength-averages.json",
+                  path_or_fileobj=(
+                      "datasets/"
+                      "openipf-raw-strength-averages.json"
+                  ),
+              ),
+          ]
+
+          result = api.create_commit(
+              repo_id=repo_id,
+              repo_type="dataset",
+              operations=operations,
+              commit_message=(
+                  "Update StrengthPeaking datasets"
+              ),
+          )
+
+          print("Hugging Face sync complete.")
+          print(result)
+          PY
