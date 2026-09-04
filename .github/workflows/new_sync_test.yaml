@@ -1,0 +1,215 @@
+name: Sync StrengthPeaking datasets
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-datasets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download latest CSV
+        run: |
+          mkdir -p datasets
+
+          echo "Downloading latest StrengthPeaking dataset..."
+
+          curl \
+            --location \
+            --fail \
+            --show-error \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 20 \
+            --max-time 120 \
+            --user-agent "StrengthPeaking-Dataset-Sync/1.0 (+https://github.com/strengthpeaking/strengthpeaking-data)" \
+            "https://strengthpeaking.com/openipf-raw-strength-averages.csv" \
+            -o datasets/openipf-raw-strength-averages.csv
+
+          test -s datasets/openipf-raw-strength-averages.csv
+
+          echo "CSV downloaded:"
+          ls -lh datasets/openipf-raw-strength-averages.csv
+
+      - name: Generate JSON from CSV
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+
+          csv_path = Path(
+              "datasets/openipf-raw-strength-averages.csv"
+          )
+
+          json_path = Path(
+              "datasets/openipf-raw-strength-averages.json"
+          )
+
+          with csv_path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline=""
+          ) as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+
+          if not rows:
+              raise RuntimeError("CSV contains no data rows")
+
+          with json_path.open(
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  rows,
+                  f,
+                  indent=2,
+                  ensure_ascii=False
+              )
+              f.write("\n")
+
+          print(f"Generated JSON with {len(rows):,} rows")
+          PY
+
+      - name: Validate datasets
+        run: |
+          echo "Validating CSV..."
+          test -s datasets/openipf-raw-strength-averages.csv
+
+          echo "Validating JSON..."
+          test -s datasets/openipf-raw-strength-averages.json
+
+          python -m json.tool \
+            datasets/openipf-raw-strength-averages.json \
+            > /dev/null
+
+          echo "Both datasets are valid."
+
+          ls -lh datasets/
+
+      - name: Check whether datasets changed
+        id: dataset_changes
+        run: |
+          git add \
+            datasets/openipf-raw-strength-averages.csv \
+            datasets/openipf-raw-strength-averages.json
+
+          if git diff --cached --quiet; then
+            echo "Datasets have not changed."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Datasets have changed."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit datasets to GitHub
+        if: steps.dataset_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit \
+            -m "Update StrengthPeaking datasets $(date -u +'%Y-%m-%d')"
+
+          git push
+
+      - name: Install Hugging Face client
+        if: steps.dataset_changes.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade huggingface_hub
+
+      - name: Publish datasets to Hugging Face
+        if: steps.dataset_changes.outputs.changed == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+
+          from huggingface_hub import (
+              HfApi,
+              CommitOperationAdd,
+          )
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+
+          operations = [
+              CommitOperationAdd(
+                  path_in_repo="openipf-raw-strength-averages.csv",
+                  path_or_fileobj=(
+                      "datasets/"
+                      "openipf-raw-strength-averages.csv"
+                  ),
+              ),
+              CommitOperationAdd(
+                  path_in_repo="openipf-raw-strength-averages.json",
+                  path_or_fileobj=(
+                      "datasets/"
+                      "openipf-raw-strength-averages.json"
+                  ),
+              ),
+          ]
+
+          api.create_commit(
+              repo_id=(
+                  "strengthpeaking/"
+                  "raw-powerlifting-strength-averages"
+              ),
+              repo_type="dataset",
+              operations=operations,
+              commit_message="Update StrengthPeaking datasets",
+          )
+
+          print("Hugging Face sync complete.")
+          PY
+
+      - name: Install Kaggle CLI
+        if: steps.dataset_changes.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade kaggle
+
+      - name: Prepare Kaggle dataset
+        if: steps.dataset_changes.outputs.changed == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          mkdir -p kaggle-dataset
+
+          # Download the existing Kaggle metadata so we retain
+          # your title, description, license and other settings.
+          kaggle datasets metadata \
+            strengthpeaking/raw-powerlifting-strength-averages \
+            -p kaggle-dataset
+
+          cp \
+            datasets/openipf-raw-strength-averages.csv \
+            kaggle-dataset/
+
+          cp \
+            datasets/openipf-raw-strength-averages.json \
+            kaggle-dataset/
+
+          echo "Files prepared for Kaggle:"
+          ls -lh kaggle-dataset/
+
+      - name: Publish new Kaggle version
+        if: steps.dataset_changes.outputs.changed == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          kaggle datasets version \
+            -p kaggle-dataset \
+            -m "Updated StrengthPeaking data $(date -u +'%Y-%m-%d')" \
+            -t
+
+          echo "Kaggle sync complete."
