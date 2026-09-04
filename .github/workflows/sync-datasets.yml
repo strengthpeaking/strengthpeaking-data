@@ -3,9 +3,7 @@ name: Sync StrengthPeaking datasets
 on:
   schedule:
     - cron: "17 3 * * *"
-      timezone: "Europe/London"
 
-  # Also gives you a "Run workflow" button in GitHub
   workflow_dispatch:
 
 permissions:
@@ -17,30 +15,76 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download latest datasets
+        shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p datasets
 
-          curl -fL --retry 3 \
+          download_file () {
+            URL="$1"
+            OUTPUT="$2"
+
+            echo "Downloading: $URL"
+
+            HTTP_CODE=$(curl \
+              --location \
+              --silent \
+              --show-error \
+              --compressed \
+              --retry 3 \
+              --connect-timeout 20 \
+              --max-time 120 \
+              --user-agent "Mozilla/5.0 (compatible; StrengthPeaking-Dataset-Sync/1.0; +https://github.com/strengthpeaking/strengthpeaking-data)" \
+              --header "Accept: */*" \
+              --output "${OUTPUT}.tmp" \
+              --write-out "%{http_code}" \
+              "$URL")
+
+            echo "HTTP status: $HTTP_CODE"
+
+            if [[ "$HTTP_CODE" != 2* ]]; then
+              echo "Download failed."
+              echo "Response body:"
+              head -c 2000 "${OUTPUT}.tmp" || true
+              echo
+              exit 1
+            fi
+
+            if [[ ! -s "${OUTPUT}.tmp" ]]; then
+              echo "Downloaded file is empty."
+              exit 1
+            fi
+
+            mv "${OUTPUT}.tmp" "$OUTPUT"
+
+            echo "Downloaded successfully:"
+            ls -lh "$OUTPUT"
+          }
+
+          download_file \
             "https://strengthpeaking.com/openipf-raw-strength-averages.csv" \
-            -o datasets/openipf-raw-strength-averages.csv.tmp
+            "datasets/openipf-raw-strength-averages.csv"
 
-          curl -fL --retry 3 \
+          download_file \
             "https://strengthpeaking.com/openipf-raw-strength-averages.json" \
-            -o datasets/openipf-raw-strength-averages.json.tmp
+            "datasets/openipf-raw-strength-averages.json"
 
-          # Basic protection against accidentally replacing the data
-          # with an empty response
-          test -s datasets/openipf-raw-strength-averages.csv.tmp
-          test -s datasets/openipf-raw-strength-averages.json.tmp
+      - name: Validate downloaded files
+        run: |
+          echo "CSV:"
+          head -n 3 datasets/openipf-raw-strength-averages.csv
 
-          mv datasets/openipf-raw-strength-averages.csv.tmp \
-             datasets/openipf-raw-strength-averages.csv
+          echo
+          echo "JSON:"
+          python -m json.tool \
+            datasets/openipf-raw-strength-averages.json \
+            > /dev/null
 
-          mv datasets/openipf-raw-strength-averages.json.tmp \
-             datasets/openipf-raw-strength-averages.json
+          echo "JSON is valid."
 
       - name: Commit changes if dataset changed
         run: |
