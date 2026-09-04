@@ -1,0 +1,127 @@
+name: Sync StrengthPeaking datasets
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+
+  # Allows manual runs from the GitHub Actions page
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-datasets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download latest CSV
+        run: |
+          mkdir -p datasets
+
+          echo "Downloading latest StrengthPeaking dataset..."
+
+          curl \
+            --location \
+            --fail \
+            --show-error \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 20 \
+            --max-time 120 \
+            --user-agent "StrengthPeaking-Dataset-Sync/1.0 (+https://github.com/strengthpeaking/strengthpeaking-data)" \
+            "https://strengthpeaking.com/openipf-raw-strength-averages.csv" \
+            -o datasets/openipf-raw-strength-averages.csv
+
+          echo
+          echo "CSV downloaded:"
+          ls -lh datasets/openipf-raw-strength-averages.csv
+
+          # Make sure the file isn't empty
+          test -s datasets/openipf-raw-strength-averages.csv
+
+      - name: Generate JSON from CSV
+        run: |
+          python - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
+
+          csv_path = Path(
+              "datasets/openipf-raw-strength-averages.csv"
+          )
+
+          json_path = Path(
+              "datasets/openipf-raw-strength-averages.json"
+          )
+
+          with csv_path.open(
+              "r",
+              encoding="utf-8-sig",
+              newline=""
+          ) as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+
+          if not rows:
+              raise RuntimeError("CSV contains no data rows")
+
+          with json_path.open(
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  rows,
+                  f,
+                  indent=2,
+                  ensure_ascii=False
+              )
+              f.write("\n")
+
+          print(f"Generated JSON with {len(rows):,} rows")
+          print(f"Saved to: {json_path}")
+          PY
+
+      - name: Validate datasets
+        run: |
+          echo "Checking CSV..."
+          test -s datasets/openipf-raw-strength-averages.csv
+
+          echo "First 3 CSV lines:"
+          head -n 3 datasets/openipf-raw-strength-averages.csv
+
+          echo
+          echo "Checking JSON..."
+          test -s datasets/openipf-raw-strength-averages.json
+
+          python -m json.tool \
+            datasets/openipf-raw-strength-averages.json \
+            > /dev/null
+
+          echo "JSON is valid."
+
+          echo
+          echo "Dataset files:"
+          ls -lh datasets/
+
+      - name: Commit changes if datasets changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            datasets/openipf-raw-strength-averages.csv \
+            datasets/openipf-raw-strength-averages.json
+
+          if git diff --cached --quiet; then
+            echo "Datasets have not changed."
+            exit 0
+          fi
+
+          git commit \
+            -m "Update StrengthPeaking datasets $(date -u +'%Y-%m-%d')"
+
+          git push
