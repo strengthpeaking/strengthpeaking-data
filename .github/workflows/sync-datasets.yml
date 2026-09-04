@@ -20,48 +20,74 @@ jobs:
       - name: Download latest datasets
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           mkdir -p datasets
 
           download_file () {
             URL="$1"
             OUTPUT="$2"
+            TEMP="${OUTPUT}.tmp"
 
-            echo "Downloading: $URL"
+            echo "================================"
+            echo "Downloading:"
+            echo "$URL"
+
+            # Temporarily disable automatic exit so we can inspect curl's
+            # actual exit code.
+            set +e
 
             HTTP_CODE=$(curl \
               --location \
-              --silent \
               --show-error \
-              --compressed \
               --retry 3 \
               --connect-timeout 20 \
               --max-time 120 \
-              --user-agent "Mozilla/5.0 (compatible; StrengthPeaking-Dataset-Sync/1.0; +https://github.com/strengthpeaking/strengthpeaking-data)" \
+              --user-agent "StrengthPeaking-Dataset-Sync/1.0 (+https://github.com/strengthpeaking/strengthpeaking-data)" \
               --header "Accept: */*" \
-              --output "${OUTPUT}.tmp" \
+              --output "$TEMP" \
               --write-out "%{http_code}" \
               "$URL")
 
+            CURL_EXIT=$?
+
+            set -e
+
+            echo
+            echo "curl exit code: $CURL_EXIT"
             echo "HTTP status: $HTTP_CODE"
 
-            if [[ "$HTTP_CODE" != 2* ]]; then
-              echo "Download failed."
-              echo "Response body:"
-              head -c 2000 "${OUTPUT}.tmp" || true
-              echo
+            if [ -f "$TEMP" ]; then
+              echo "Downloaded size:"
+              wc -c "$TEMP"
+            fi
+
+            if [ "$CURL_EXIT" -ne 0 ]; then
+              echo "ERROR: curl failed with exit code $CURL_EXIT"
               exit 1
             fi
 
-            if [[ ! -s "${OUTPUT}.tmp" ]]; then
-              echo "Downloaded file is empty."
+            case "$HTTP_CODE" in
+              2*)
+                echo "HTTP request successful."
+                ;;
+              *)
+                echo "ERROR: Server returned HTTP $HTTP_CODE"
+                echo "Response:"
+                head -c 2000 "$TEMP" || true
+                echo
+                exit 1
+                ;;
+            esac
+
+            if [ ! -s "$TEMP" ]; then
+              echo "ERROR: Downloaded file is empty."
               exit 1
             fi
 
-            mv "${OUTPUT}.tmp" "$OUTPUT"
+            mv "$TEMP" "$OUTPUT"
 
-            echo "Downloaded successfully:"
+            echo "Saved:"
             ls -lh "$OUTPUT"
           }
 
@@ -73,18 +99,20 @@ jobs:
             "https://strengthpeaking.com/openipf-raw-strength-averages.json" \
             "datasets/openipf-raw-strength-averages.json"
 
-      - name: Validate downloaded files
+      - name: Validate datasets
         run: |
-          echo "CSV:"
+          echo "Checking CSV..."
+          test -s datasets/openipf-raw-strength-averages.csv
           head -n 3 datasets/openipf-raw-strength-averages.csv
 
           echo
-          echo "JSON:"
+          echo "Checking JSON..."
+          test -s datasets/openipf-raw-strength-averages.json
           python -m json.tool \
             datasets/openipf-raw-strength-averages.json \
             > /dev/null
 
-          echo "JSON is valid."
+          echo "Both datasets are valid."
 
       - name: Commit changes if dataset changed
         run: |
@@ -94,7 +122,7 @@ jobs:
           git add datasets/
 
           if git diff --cached --quiet; then
-            echo "No dataset changes."
+            echo "Datasets have not changed."
             exit 0
           fi
 
