@@ -1,0 +1,58 @@
+name: Sync StrengthPeaking datasets
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+      timezone: "Europe/London"
+
+  # Also gives you a "Run workflow" button in GitHub
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download latest datasets
+        run: |
+          mkdir -p datasets
+
+          curl -fL --retry 3 \
+            "https://strengthpeaking.com/openipf-raw-strength-averages.csv" \
+            -o datasets/openipf-raw-strength-averages.csv.tmp
+
+          curl -fL --retry 3 \
+            "https://strengthpeaking.com/openipf-raw-strength-averages.json" \
+            -o datasets/openipf-raw-strength-averages.json.tmp
+
+          # Basic protection against accidentally replacing the data
+          # with an empty response
+          test -s datasets/openipf-raw-strength-averages.csv.tmp
+          test -s datasets/openipf-raw-strength-averages.json.tmp
+
+          mv datasets/openipf-raw-strength-averages.csv.tmp \
+             datasets/openipf-raw-strength-averages.csv
+
+          mv datasets/openipf-raw-strength-averages.json.tmp \
+             datasets/openipf-raw-strength-averages.json
+
+      - name: Commit changes if dataset changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add datasets/
+
+          if git diff --cached --quiet; then
+            echo "No dataset changes."
+            exit 0
+          fi
+
+          git commit -m "Update StrengthPeaking datasets $(date -u +'%Y-%m-%d')"
+          git push
